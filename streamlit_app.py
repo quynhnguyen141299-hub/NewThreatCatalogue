@@ -116,8 +116,6 @@ STATUS_COLORS = {
     "MONITORING":     "#1a3a1a",
 }
 
-# Severity-based priority NIST function — keeps only the most actionable
-# controls for a given severity level instead of showing all 5 functions.
 SEVERITY_TO_PRIORITY_FUNCTION = {
     "Low":    "Detect",
     "Medium": "Protect",
@@ -150,11 +148,10 @@ def map_to_catalogue(row):
     for tag in tags: nist_entries+=STRIDE_TO_NIST.get(tag.strip(),[])
     nist_entries+=LAYER_TO_NIST.get(layer,[])
 
-    # Filter to only the priority NIST function for this severity level
     priority_fn = SEVERITY_TO_PRIORITY_FUNCTION.get(severity, "Protect")
     priority_entries = [e for e in nist_entries if e["function"] == priority_fn]
     if not priority_entries:
-        priority_entries = nist_entries  # fallback if no match
+        priority_entries = nist_entries
 
     return pd.Series({
         "STRIDE Tags":      ", ".join(tags) if tags else "Unknown",
@@ -282,7 +279,6 @@ def build_pdf(catalogue, siem_df, summary_stats, raw_votes):
     pdf.set_auto_page_break(auto=True, margin=15)
     pdf.set_left_margin(10); pdf.set_right_margin(10)
 
-    # Cover
     pdf.add_page()
     pdf.set_fill_color(15,20,50); pdf.rect(0,0,297,210,"F")
     pdf.set_text_color(255,255,255); pdf.set_font("helvetica","B",22); pdf.ln(70)
@@ -292,7 +288,6 @@ def build_pdf(catalogue, siem_df, summary_stats, raw_votes):
     pdf.set_font("helvetica",size=11)
     pdf.cell(0,9,sanitise(f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M')}"),ln=True,align="C")
 
-    # Summary
     pdf.add_page()
     pdf.set_text_color(0,0,0); pdf.set_font("helvetica","B",14)
     pdf.cell(0,10,sanitise("Summary Statistics"),ln=True); pdf.set_font("helvetica",size=10); pdf.ln(2)
@@ -309,7 +304,6 @@ def build_pdf(catalogue, siem_df, summary_stats, raw_votes):
             count=len(siem_df[siem_df["Status"]==s]) if "Status" in siem_df.columns else 0
             pdf.cell(0,7,sanitise(f"  {s}: {count}"),ln=True)
 
-    # Catalogue table
     page_w = 277
     cat_cols = catalogue.columns.tolist()
     cat_widths_map = {
@@ -329,7 +323,6 @@ def build_pdf(catalogue, siem_df, summary_stats, raw_votes):
     cat_widths = [w * page_w / total for w in cat_widths]
     write_table(pdf, catalogue, "Threat Catalogue (MITRE ATT&CK + NIST CSF)", cat_widths, font_size=6)
 
-    # SIEM table
     if siem_df is not None and len(siem_df)>0:
         siem_cols = siem_df.columns.tolist()
         siem_widths_map = {
@@ -646,29 +639,6 @@ if uploaded:
             siem_styled=siem_df.style.map(colour_severity,subset=["Severity"]).map(colour_status,subset=["Status"])
             st.dataframe(siem_styled,use_container_width=True)
 
-            st.markdown("**Incident Detail View**")
-            selected_inc=st.selectbox("Select Incident to Inspect",siem_df["Incident ID"].tolist(),key="inc_select")
-            if selected_inc:
-                inc=next((i for i in incidents if i.incident_id==selected_inc),None)
-                if inc:
-                    d1,d2,d3=st.columns(3)
-                    d1.metric("Severity",inc.severity); d2.metric("Status",inc.status)
-                    d3.metric("Escalate","Yes" if inc.escalate else "No")
-                    st.markdown(f"**STRIDE Tags:** {', '.join(inc.stride_tags)}")
-                    st.markdown(f"**ASAP Layer:** {inc.asap_layer}")
-                    st.markdown(f"**MITRE Techniques:** {inc.mitre_techniques}")
-                    st.markdown(f"**NIST Controls:** {inc.nist_controls}")
-                    st.markdown(f"**Triggered Rules:** {' | '.join(inc.triggered_rules)}")
-                    st.markdown("**Automated Actions:**")
-                    for a in [x for x in inc.actions if x.automated]:
-                        color={"DETECT":"#DD8452","PROTECT":"#55A868","RESPOND":"#C44E52",
-                               "RECOVER":"#8172B2","LOG":"#4C72B0","ESCALATE":"#cc0000"}.get(a.action_type,"#555")
-                        st.markdown(f"<span style='background:{color};padding:2px 8px;border-radius:3px;color:white;font-size:11px'>{a.action_type}</span> &nbsp; `{a.nist_control}` - {a.description}",unsafe_allow_html=True)
-                    manual=[x for x in inc.actions if not x.automated]
-                    if manual:
-                        st.markdown("**Manual Actions Required:**")
-                        for a in manual: st.markdown(f"Warning: `{a.nist_control}` - {a.description}")
-
             dl1,dl2=st.columns(2)
             with dl1: st.download_button("Download Catalogue (CSV)",catalogue.to_csv(index=False),"Threat_Catalogue.csv","text/csv")
             with dl2:
@@ -680,59 +650,90 @@ if uploaded:
             if siem_df is not None:
                 st.download_button("Download SIEM Incident Log (CSV)",siem_df.to_csv(index=False),"SIEM_Incidents.csv","text/csv")
 
-        # Model evaluation
+        # ══════════════════════════════════════════════
+        # MODEL EVALUATION — real label from the uploaded data
+        # ══════════════════════════════════════════════
         st.subheader("Model Evaluation")
-        y_true=final
+
+        # "label" is the real field your simulator writes into details
+        # (0 = benign, 1 = attacker-driven). preprocess() already pulls it
+        # out into processed["ground_truth_label"] so it never leaks into
+        # X as a feature. This is the only genuine, independent truth
+        # available for this dataset — if it's missing, ROC/PR/Confusion
+        # Matrix are mathematically undefined and are not drawn.
+        has_real_label = (
+            "ground_truth_label" in processed.columns
+            and processed["ground_truth_label"].nunique() >= 2
+        )
 
         algorithms={"Z-Score":zscore_result,"DBSCAN":dbscan_result,"Isolation Forest":iso_result,"Ensemble":final}
         scores={"Z-Score":zscore_result.astype(float),"DBSCAN":dbscan_result.astype(float),
                 "Isolation Forest":iso_result.astype(float),"Ensemble":raw_votes.astype(float)/3}
         colors_ev={"Z-Score":"#4C72B0","DBSCAN":"#DD8452","Isolation Forest":"#55A868","Ensemble":"#C44E52"}
 
-        can_draw_curves = len(np.unique(y_true)) >= 2
+        if not has_real_label:
+            st.warning(
+                "This dataset has no usable 'label' field (or it has only one "
+                "class), so there is no independent truth to plot a real ROC "
+                "curve, Precision-Recall curve, or Confusion Matrix against. "
+                "These metrics require a genuine 0/1 label — comparing the "
+                "algorithms to each other or to the ensemble's own vote would "
+                "not be a real evaluation, so no chart is shown here. "
+                "Re-upload a CSV produced by the simulator (which writes a "
+                "real 'label' field for every row) to see real metrics."
+            )
+        else:
+            y_true = processed["ground_truth_label"].values
 
-        tab1,tab2,tab3=st.tabs(["ROC Curve","Precision-Recall Curve","Confusion Matrix"])
+            n_pos = int((y_true == 1).sum())
+            n_neg = int((y_true == 0).sum())
+            l1, l2 = st.columns(2)
+            l1.metric("Labelled Attack rows", n_pos)
+            l2.metric("Labelled Benign rows", n_neg)
 
-        with tab1:
-            fig,ax=plt.subplots(figsize=(7,5))
-            if not can_draw_curves:
-                ax.text(0.5,0.5,
-                        "ROC curve unavailable:\nAll transactions have the same label.\n"
-                        "Adjust model parameters to get both\nnormal and threat predictions.",
-                        ha="center",va="center",color="white",fontsize=11,transform=ax.transAxes)
-            else:
+            tab1,tab2,tab3=st.tabs(["ROC Curve","Precision-Recall Curve","Confusion Matrix"])
+
+            with tab1:
+                fig,ax=plt.subplots(figsize=(7,5))
                 ax.plot([0,1],[0,1],"k--",lw=1,label="Random")
                 for name,score in scores.items():
                     fpr,tpr,_=roc_curve(y_true,score)
                     ax.plot(fpr,tpr,color=colors_ev[name],lw=2,label=f"{name} (AUC={auc(fpr,tpr):.2f})")
                 ax.set_xlabel("FPR"); ax.set_ylabel("TPR")
                 ax.legend(facecolor="#1a1a2e",labelcolor="white",loc="lower right")
-            ax.set_title("ROC Curve")
-            dark_ax(ax,fig); st.pyplot(fig)
+                ax.set_title("ROC Curve")
+                dark_ax(ax,fig); st.pyplot(fig)
 
-        with tab2:
-            fig,ax=plt.subplots(figsize=(7,5))
-            if not can_draw_curves:
-                ax.text(0.5,0.5,
-                        "Precision-Recall curve unavailable:\nAll transactions have the same label.\n"
-                        "Adjust model parameters to get both\nnormal and threat predictions.",
-                        ha="center",va="center",color="white",fontsize=11,transform=ax.transAxes)
-            else:
+            with tab2:
+                fig,ax=plt.subplots(figsize=(7,5))
                 for name,score in scores.items():
                     prec,rec,_=precision_recall_curve(y_true,score)
                     ax.plot(rec,prec,color=colors_ev[name],lw=2,label=f"{name} (AUC={auc(rec,prec):.2f})")
                 ax.set_xlabel("Recall"); ax.set_ylabel("Precision")
                 ax.legend(facecolor="#1a1a2e",labelcolor="white",loc="upper right")
-            ax.set_title("Precision-Recall Curve")
-            dark_ax(ax,fig); st.pyplot(fig)
+                ax.set_title("Precision-Recall Curve")
+                dark_ax(ax,fig); st.pyplot(fig)
 
-        with tab3:
-            cms_cols=st.columns(2)
-            for i,(name,preds) in enumerate(algorithms.items()):
-                with cms_cols[i%2]:
-                    fig,ax=plt.subplots(figsize=(4,3.5))
-                    disp=ConfusionMatrixDisplay(confusion_matrix(y_true,preds),display_labels=["Normal","Threat"])
-                    disp.plot(ax=ax,colorbar=False,cmap="Blues")
-                    ax.set_title(name,color="white"); dark_ax(ax,fig)
-                    for text in ax.texts: text.set_color("black")
-                    st.pyplot(fig)
+            with tab3:
+                cms_cols=st.columns(2)
+                for i,(name,preds) in enumerate(algorithms.items()):
+                    with cms_cols[i%2]:
+                        fig,ax=plt.subplots(figsize=(4,3.5))
+                        disp=ConfusionMatrixDisplay(confusion_matrix(y_true,preds),display_labels=["Normal","Threat"])
+                        disp.plot(ax=ax,colorbar=False,cmap="Blues")
+                        ax.set_title(name,color="white"); dark_ax(ax,fig)
+                        for text in ax.texts: text.set_color("black")
+                        st.pyplot(fig)
+
+            st.markdown("**Precision / Recall / F1 per Algorithm**")
+            from sklearn.metrics import precision_score, recall_score, f1_score, accuracy_score
+            metrics_rows = []
+            for name, preds in algorithms.items():
+                metrics_rows.append({
+                    "Algorithm": name,
+                    "Accuracy":  f"{accuracy_score(y_true, preds):.3f}",
+                    "Precision": f"{precision_score(y_true, preds, zero_division=0):.3f}",
+                    "Recall":    f"{recall_score(y_true, preds, zero_division=0):.3f}",
+                    "F1 Score":  f"{f1_score(y_true, preds, zero_division=0):.3f}",
+                })
+            st.dataframe(pd.DataFrame(metrics_rows), use_container_width=True)
