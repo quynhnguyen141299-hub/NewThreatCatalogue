@@ -5,17 +5,41 @@ from sklearn.ensemble import IsolationForest
 from sklearn.neighbors import NearestNeighbors
 
 
+def _sanitise(arr):
+    """Replace any NaN/Inf with finite fallback values so downstream
+    sklearn metrics (roc_curve, precision_recall_curve) never crash on
+    assert_all_finite. NaN -> 0.0, +Inf -> max finite value in arr,
+    -Inf -> min finite value in arr (falls back to 0.0 if everything
+    is non-finite)."""
+    arr = np.asarray(arr, dtype=float)
+    finite_mask = np.isfinite(arr)
+    if not finite_mask.any():
+        return np.zeros_like(arr)
+    finite_vals = arr[finite_mask]
+    fmax = finite_vals.max()
+    fmin = finite_vals.min()
+    arr = np.where(np.isnan(arr), 0.0, arr)
+    arr = np.where(np.isposinf(arr), fmax, arr)
+    arr = np.where(np.isneginf(arr), fmin, arr)
+    return arr
+
+
 def detect(X, z_threshold, eps, min_samples, contamination):
+
+    X = np.asarray(X, dtype=float)
+    n_samples = X.shape[0]
 
     #################################
     # Z-score
     #################################
-    z = np.abs(zscore(X))
-    # Continuous score: the single largest |z| across all features for
-    # each row. This is what actually drove the binary decision, so it
-    # is a meaningful continuous signal for ROC/PR curves (higher = more
-    # anomalous), unlike the thresholded 0/1 result.
-    z_score_continuous = z.max(axis=1)
+    # zscore() divides by std-dev per column; a zero-variance column
+    # produces NaN for every row in that column — guard against that
+    # before taking abs()/max().
+    z_raw = zscore(X, axis=0)
+    z_raw = np.nan_to_num(z_raw, nan=0.0, posinf=0.0, neginf=0.0)
+    z = np.abs(z_raw)
+
+    z_score_continuous = _sanitise(z.max(axis=1))
     z_result = (z > z_threshold).any(axis=1).astype(int)
 
     #################################
@@ -28,15 +52,19 @@ def detect(X, z_threshold, eps, min_samples, contamination):
     labels = db.fit_predict(X)
     db_result = np.where(labels == -1, 1, 0)
 
-    # Continuous score: distance to the nearest neighbour. DBSCAN itself
-    # has no native anomaly score, so we derive one — points far from
-    # their nearest neighbour are the ones DBSCAN tends to call noise
-    # (-1), so this distance is a reasonable continuous proxy (higher =
-    # more anomalous) that still respects DBSCAN's own geometry.
-    k = max(1, min(min_samples, len(X) - 1))
-    nbrs = NearestNeighbors(n_neighbors=k + 1).fit(X)
-    distances, _ = nbrs.kneighbors(X)
-    db_score_continuous = distances[:, 1:].mean(axis=1)  # exclude self (distance 0)
+    # Continuous score: mean distance to nearest neighbours. Guard the
+    # neighbour count against having more neighbours requested than
+    # points available (which raises in NearestNeighbors, not just
+    # returns NaN), and guard the final array against any residual
+    # non-finite values before returning it.
+    k = max(1, min(min_samples, n_samples - 1))
+    if n_samples > 1:
+        nbrs = NearestNeighbors(n_neighbors=k + 1).fit(X)
+        distances, _ = nbrs.kneighbors(X)
+        db_score_continuous = distances[:, 1:].mean(axis=1)  # exclude self (distance 0)
+    else:
+        db_score_continuous = np.zeros(n_samples)
+    db_score_continuous = _sanitise(db_score_continuous)
 
     #################################
     # Isolation Forest
@@ -52,11 +80,7 @@ def detect(X, z_threshold, eps, min_samples, contamination):
         0
     )
 
-    # Continuous score: Isolation Forest's own decision_function returns
-    # higher values for normal points and lower (more negative) values
-    # for anomalies, so we flip the sign (higher = more anomalous) to
-    # match the convention used by the other two scores above.
-    iso_score_continuous = -iso.decision_function(X)
+    iso_score_continuous = _sanitise(-iso.decision_function(X))
 
     #################################
     # Ensemble
@@ -64,21 +88,20 @@ def detect(X, z_threshold, eps, min_samples, contamination):
     votes = z_result + db_result + iso_result
     ensemble = np.where(votes >= 2, 1, 0)
 
-    # Continuous ensemble score: simple average of the three normalised
-    # continuous scores (each min-max scaled to [0, 1] first so no single
-    # algorithm's raw scale dominates the average).
     def _minmax(a):
-        a = np.asarray(a, dtype=float)
+        a = _sanitise(a)
         lo, hi = a.min(), a.max()
         if hi - lo < 1e-12:
             return np.zeros_like(a)
         return (a - lo) / (hi - lo)
 
-    ensemble_score_continuous = (
-        _minmax(z_score_continuous)
-        + _minmax(db_score_continuous)
-        + _minmax(iso_score_continuous)
-    ) / 3.0
+    ensemble_score_continuous = _sanitise(
+        (
+            _minmax(z_score_continuous)
+            + _minmax(db_score_continuous)
+            + _minmax(iso_score_continuous)
+        ) / 3.0
+    )
 
     continuous_scores = {
         "Z-Score":          z_score_continuous,
