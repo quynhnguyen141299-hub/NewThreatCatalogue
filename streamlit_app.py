@@ -371,7 +371,7 @@ if uploaded:
         orig_stride_tags = df["stride_tags"].values if "stride_tags" in df.columns else None
 
         X,processed,feature_names,scaler = preprocess(df)
-        zscore_result,dbscan_result,iso_result,votes,final = detect(X,z,eps,samples,contam)
+        zscore_result,dbscan_result,iso_result,votes,final,continuous_scores = detect(X,z,eps,samples,contam)
         raw_votes = votes.copy()
 
         processed["ZScore"]          = zscore_result
@@ -394,6 +394,7 @@ if uploaded:
         st.session_state["feature_names"]    = feature_names
         st.session_state["X"]                = X
         st.session_state["contam"]           = contam
+        st.session_state["continuous_scores"] = continuous_scores
 
     if st.session_state.get("detection_done", False):
         processed     = st.session_state["processed"]
@@ -405,6 +406,7 @@ if uploaded:
         feature_names = st.session_state["feature_names"]
         X             = st.session_state["X"]
         contam        = st.session_state["contam"]
+        continuous_scores = st.session_state["continuous_scores"]
 
         st.success("Detection Completed")
         n_threat=int((raw_votes>=1).sum())
@@ -667,8 +669,12 @@ if uploaded:
         )
 
         algorithms={"Z-Score":zscore_result,"DBSCAN":dbscan_result,"Isolation Forest":iso_result,"Ensemble":final}
-        scores={"Z-Score":zscore_result.astype(float),"DBSCAN":dbscan_result.astype(float),
-                "Isolation Forest":iso_result.astype(float),"Ensemble":raw_votes.astype(float)/3}
+        # Use the continuous anomaly scores from detector.py (not the
+        # already-thresholded 0/1 predictions) — ROC/PR curves need a
+        # continuous score to trace out a meaningful curve across
+        # thresholds; feeding them a binary value collapses the curve
+        # to a single point and produces near-random-looking AUC.
+        scores=continuous_scores
         colors_ev={"Z-Score":"#4C72B0","DBSCAN":"#DD8452","Isolation Forest":"#55A868","Ensemble":"#C44E52"}
 
         if not has_real_label:
