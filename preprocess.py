@@ -20,11 +20,22 @@ def preprocess(df):
     )
 
     if "ts" in df.columns:
-        df["ts"] = pd.to_datetime(df["ts"])
+        df["ts"] = pd.to_datetime(df["ts"], format="ISO8601")
         df["hour"] = df["ts"].dt.hour
         df["minute"] = df["ts"].dt.minute
         df["second"] = df["ts"].dt.second
         df.drop(columns=["ts"], inplace=True)
+
+    # Extract ground-truth label BEFORE it touches the feature matrix.
+    # "label" comes from the simulator (0 = benign, 1 = attacker-driven).
+    # It must never be used as a model feature (that would be leaking the
+    # answer into the detector), so pull it out into its own series and
+    # drop it from the dataframe that becomes X.
+    if "label" in df.columns:
+        ground_truth_label = pd.to_numeric(df["label"], errors="coerce").fillna(0).astype(int)
+        df = df.drop(columns=["label"])
+    else:
+        ground_truth_label = pd.Series([0] * len(df), index=df.index)
 
     # Fill NaN values
     for col in df.columns:
@@ -42,11 +53,17 @@ def preprocess(df):
     # Ensure all columns are float
     df = df.astype(float)
 
-    # Save feature names before scaling
-    feature_names = df.columns.tolist()
+    # Re-attach the ground-truth label to the processed dataframe for
+    # display/evaluation purposes ONLY (it is NOT part of feature_names
+    # and is NOT included in X below).
+    df["ground_truth_label"] = ground_truth_label.values
 
-    # Scale
+    # Save feature names before scaling — deliberately excludes
+    # ground_truth_label so it can never leak into the detection models.
+    feature_names = [c for c in df.columns if c != "ground_truth_label"]
+
+    # Scale only the real features
     scaler = StandardScaler()
-    X = scaler.fit_transform(df)
+    X = scaler.fit_transform(df[feature_names])
 
     return X, df, feature_names, scaler
