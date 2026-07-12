@@ -432,7 +432,29 @@ if uploaded:
         orig_stride_tags = df["stride_tags"].values if "stride_tags" in df.columns else None
 
         X,processed,feature_names,scaler = preprocess(df)
-        zscore_result,dbscan_result,iso_result,votes,final,continuous_scores = detect(X,z,eps,samples,contam)
+
+        # Extract benign-only rows to fit detectors on clean data.
+        # Detectors must learn what 'normal' looks like from benign
+        # rows only — fitting on mixed data causes attacks to define
+        # part of the normal baseline, collapsing detection performance.
+        if "ground_truth_label" in processed.columns:
+            benign_mask = processed["ground_truth_label"].values == 0
+        else:
+            # Fallback: use system_init agent_id as benign proxy
+            import json as _json
+            def _is_benign(row):
+                try:
+                    d = _json.loads(df.loc[row.name, "details"]) if "details" in df.columns else {}
+                    return d.get("agent_id", "") == "system_init"
+                except:
+                    return False
+            benign_mask = np.array([False] * len(processed))
+
+        X_benign = X[benign_mask] if benign_mask.sum() >= 10 else None
+
+        zscore_result,dbscan_result,iso_result,votes,final,continuous_scores = detect(
+            X, z, eps, samples, contam, X_benign=X_benign
+        )
         raw_votes = votes.copy()
 
         processed["ZScore"]          = zscore_result
