@@ -371,8 +371,9 @@ if uploaded:
             from scipy.stats import zscore as _zs
             import numpy as _np
 
-            _df  = pd.read_csv(uploaded)
-            _X, _, _, _ = _pre(_df)
+            # Use the already-loaded df — re-reading uploaded fails
+            # because the file cursor is exhausted after the first read
+            _X, _, _, _ = _pre(df.copy())
             _X   = _np.asarray(_X, dtype=float)
 
             # Z-score threshold: 95th percentile of max |z| across rows
