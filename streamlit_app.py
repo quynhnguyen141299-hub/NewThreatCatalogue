@@ -360,10 +360,70 @@ if uploaded:
     st.subheader("Uploaded Dataset"); st.dataframe(df)
 
     st.sidebar.header("Model Parameters")
-    z      =st.sidebar.slider("Z-score Threshold",2.0,5.0,3.0)
-    eps    =st.sidebar.slider("DBSCAN eps",0.1,2.0,0.8)
-    samples=st.sidebar.slider("Minimum Samples",2,20,5)
-    contam =st.sidebar.slider("Isolation Forest",0.01,0.20,0.05)
+
+    # ── Auto-tune ──────────────────────────────────────────────────────
+    st.sidebar.markdown("**Auto-Tune Parameters**")
+    st.sidebar.caption("Estimates best parameters from the uploaded data.")
+
+    if st.sidebar.button("Auto-Tune"):
+        try:
+            from preprocess import preprocess as _pre
+            from scipy.stats import zscore as _zs
+            import numpy as _np
+
+            _df  = pd.read_csv(uploaded)
+            _X, _, _, _ = _pre(_df)
+            _X   = _np.asarray(_X, dtype=float)
+
+            # Z-score threshold: 95th percentile of max |z| across rows
+            _z_raw = _np.abs(_zs(_X, axis=0))
+            _z_raw = _np.nan_to_num(_z_raw, nan=0.0)
+            _z_auto = float(_np.percentile(_z_raw.max(axis=1), 85))
+            _z_auto = float(_np.clip(_z_auto, 2.0, 5.0))
+
+            # DBSCAN eps: knee of k-nearest-neighbour distance curve
+            from sklearn.neighbors import NearestNeighbors as _NN
+            _nbrs = _NN(n_neighbors=5).fit(_X)
+            _dists, _ = _nbrs.kneighbors(_X)
+            _kdist = _np.sort(_dists[:, 4])[::-1]
+            _diffs = _np.diff(_kdist)
+            _knee  = int(_np.argmax(_diffs < _np.percentile(_diffs, 10)))
+            _eps_auto = float(_np.clip(_kdist[_knee], 0.1, 2.0))
+
+            # Minimum samples: sqrt of number of rows (common heuristic)
+            _ms_auto = int(_np.clip(int(_np.sqrt(len(_X))), 2, 20))
+
+            # Contamination: fraction of rows with max |z| > 2.0
+            _contam_auto = float(_np.clip(
+                (_z_raw.max(axis=1) > 2.0).mean(), 0.01, 0.499
+            ))
+            # Cap at 0.20 for the slider range
+            _contam_auto = float(min(_contam_auto, 0.20))
+
+            st.session_state["at_z"]       = round(_z_auto, 2)
+            st.session_state["at_eps"]     = round(_eps_auto, 2)
+            st.session_state["at_samples"] = _ms_auto
+            st.session_state["at_contam"]  = round(_contam_auto, 3)
+            st.sidebar.success(
+                f"Tuned: z={_z_auto:.2f}, eps={_eps_auto:.2f}, "
+                f"samples={_ms_auto}, contam={_contam_auto:.3f}"
+            )
+        except Exception as _e:
+            st.sidebar.error(f"Auto-tune failed: {_e}")
+
+    # Initialise session defaults on first load
+    if "at_z"       not in st.session_state: st.session_state["at_z"]       = 3.0
+    if "at_eps"     not in st.session_state: st.session_state["at_eps"]     = 0.8
+    if "at_samples" not in st.session_state: st.session_state["at_samples"] = 5
+    if "at_contam"  not in st.session_state: st.session_state["at_contam"]  = 0.05
+
+    z       = st.sidebar.slider("Z-score Threshold", 2.0,  5.0,  st.session_state["at_z"],       step=0.1)
+    eps     = st.sidebar.slider("DBSCAN eps",         0.1,  2.0,  st.session_state["at_eps"],     step=0.05)
+    samples = st.sidebar.slider("Minimum Samples",    2,    20,   st.session_state["at_samples"])
+    contam  = st.sidebar.slider("Isolation Forest",   0.01, 0.20, st.session_state["at_contam"],  step=0.005)
+
+    st.sidebar.markdown("---")
+    st.sidebar.caption("Adjust sliders manually or click Auto-Tune to reset to data-driven defaults.")
 
     if st.button("Start Threat Detection"):
         orig_process     = df["process"].values     if "process"     in df.columns else None
