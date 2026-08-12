@@ -724,13 +724,21 @@ if uploaded:
 
         # Why flagged
         st.subheader("Why Was It Flagged?")
-        if len(threats_df)>0:
-            X_df_t=X_df[raw_votes>=1]; explanations=[]
-            for idx in X_df_t.index:
-                row_z=np.abs(X_df.loc[idx]); top_feats=row_z.nlargest(3)
-                reason=", ".join([f"{f} (z={v:.2f})" for f,v in top_feats.items()])
-                explanations.append({"Transaction #":idx,"Top Contributing Features":reason,"Severity":get_severity(raw_votes[idx])})
-            st.dataframe(pd.DataFrame(explanations),use_container_width=True)
+        if len(threats_df) > 0:
+            # Use threats_df.index so Transaction # matches the row numbers
+            # shown in the Threat Transactions table above — X_df shares the
+            # same positional index as processed, so loc[] works correctly.
+            explanations = []
+            for idx in threats_df.index:
+                row_z    = np.abs(X_df.loc[idx])
+                top_feats = row_z.nlargest(3)
+                reason   = ", ".join([f"{f} (z={v:.2f})" for f, v in top_feats.items()])
+                explanations.append({
+                    "Transaction #":          idx,
+                    "Top Contributing Features": reason,
+                    "Severity":               get_severity(raw_votes[idx])
+                })
+            st.dataframe(pd.DataFrame(explanations), use_container_width=True)
 
         # SHAP
         st.subheader("SHAP - Isolation Forest Explainability")
