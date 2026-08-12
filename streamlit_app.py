@@ -615,25 +615,60 @@ if uploaded:
 
         st.dataframe(filtered, use_container_width=True)
 
-        # Normal vs threat — matched by process + asap_layer + stride_tags
+        # Normal vs threat — user-driven filters + automatic matching
         st.subheader("Normal vs Threat Transaction Comparison")
-        normal_df = processed[raw_votes == 0]
+        st.caption("Filter to a specific process, ASAP layer, or STRIDE tag to compare transactions of the same type.")
 
-        if len(threats_df) > 0 and len(normal_df) > 0:
-            # Try to find a normal transaction matching the first threat's
-            # process, asap_layer, and stride_tags so the comparison is
-            # meaningful (same transaction type, different label).
-            first_threat = threats_df.iloc[0]
+        normal_df  = processed[raw_votes == 0].copy()
+        compare_df = threats_df.copy()
+
+        # ── Comparison filters ────────────────────────────────────────
+        cmp_c1, cmp_c2, cmp_c3 = st.columns(3)
+
+        cmp_proc_opts  = sorted(compare_df["process"].astype(str).dropna().unique().tolist())    if "process"    in compare_df.columns else []
+        cmp_layer_opts = sorted(compare_df["asap_layer"].astype(str).dropna().unique().tolist()) if "asap_layer" in compare_df.columns else []
+        cmp_stride_opts = ["Spoofing","Tampering","InformationDisclosure",
+                           "DenialOfService","Repudiation","ElevationOfPrivilege"]
+
+        cmp_proc   = cmp_c1.selectbox("Filter by Process",    ["All"] + cmp_proc_opts,  key="cmp_proc")
+        cmp_layer  = cmp_c2.selectbox("Filter by ASAP Layer", ["All"] + cmp_layer_opts, key="cmp_layer")
+        cmp_stride = cmp_c3.selectbox("Filter by STRIDE Tag", ["All"] + cmp_stride_opts, key="cmp_stride")
+
+        # Apply filters to threat pool
+        if cmp_proc  != "All" and "process"    in compare_df.columns:
+            compare_df = compare_df[compare_df["process"].astype(str)    == cmp_proc]
+        if cmp_layer != "All" and "asap_layer" in compare_df.columns:
+            compare_df = compare_df[compare_df["asap_layer"].astype(str) == cmp_layer]
+        if cmp_stride != "All" and "stride_tags" in compare_df.columns:
+            def _has_stride(t):
+                try: return cmp_stride in ast.literal_eval(str(t))
+                except: return False
+            compare_df = compare_df[compare_df["stride_tags"].apply(_has_stride)]
+
+        # Apply same filters to normal pool so matching is fair
+        if cmp_proc  != "All" and "process"    in normal_df.columns:
+            normal_df = normal_df[normal_df["process"].astype(str)    == cmp_proc]
+        if cmp_layer != "All" and "asap_layer" in normal_df.columns:
+            normal_df = normal_df[normal_df["asap_layer"].astype(str) == cmp_layer]
+        if cmp_stride != "All" and "stride_tags" in normal_df.columns:
+            normal_df = normal_df[normal_df["stride_tags"].apply(_has_stride)]
+
+        if len(compare_df) == 0:
+            st.warning("No threat transactions match the selected filters. Try broadening the selection.")
+        elif len(normal_df) == 0:
+            st.warning("No normal transactions match the selected filters. Try broadening the selection.")
+        else:
+            first_threat   = compare_df.iloc[0]
             matched_normal = None
+            matched_label  = ""
 
-            # Match on process + asap_layer + stride_tags (all three)
+            # Auto-match: try progressively relaxed column sets
             for col_set in [
                 ["process", "asap_layer", "stride_tags"],
                 ["process", "asap_layer"],
                 ["process"],
             ]:
-                # Only filter on columns that exist in both dataframes
-                cols = [c for c in col_set if c in normal_df.columns and c in threats_df.columns]
+                cols = [c for c in col_set if c in normal_df.columns and c in compare_df.columns]
                 if not cols:
                     continue
                 mask = pd.Series([True] * len(normal_df), index=normal_df.index)
@@ -642,18 +677,17 @@ if uploaded:
                 candidates = normal_df[mask]
                 if len(candidates) > 0:
                     matched_normal = candidates.iloc[0]
-                    matched_label = " + ".join(cols)
+                    matched_label  = " + ".join(cols)
                     break
 
             if matched_normal is not None:
-                st.caption(f"Matched on: **{matched_label}** — comparing transactions of the same type.")
+                st.caption(f"Matched on: **{matched_label}** — comparing transactions of the same structural type.")
                 st.dataframe(
                     pd.DataFrame({"Normal": matched_normal, "Threat": first_threat}).T,
                     use_container_width=True
                 )
             else:
-                # Fallback: no match found — use first available normal row
-                st.caption("No matching normal transaction found for the same process/layer — showing closest available.")
+                st.caption("No exact match found for the selected filters — showing closest available normal transaction.")
                 st.dataframe(
                     pd.DataFrame({"Normal": normal_df.iloc[0], "Threat": first_threat}).T,
                     use_container_width=True
