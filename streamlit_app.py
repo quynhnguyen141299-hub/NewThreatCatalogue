@@ -620,14 +620,25 @@ if uploaded:
         st.caption("Filter to a specific process, ASAP layer, or STRIDE tag to compare transactions of the same type.")
 
         # Full pools — always start from complete normal/threat sets
+        # Use .copy() and ensure process/asap_layer/stride_tags are string
+        # type for reliable comparison — LabelEncoder may have encoded them
+        # as integers in X but streamlit_app.py restores the originals into
+        # processed after detection, so they should be strings here.
         full_normal_df = processed[raw_votes == 0].copy()
         compare_df     = threats_df.copy()
+
+        # Force string type on the three filter columns in both pools
+        for _col in ["process", "asap_layer", "stride_tags"]:
+            if _col in full_normal_df.columns:
+                full_normal_df[_col] = full_normal_df[_col].astype(str)
+            if _col in compare_df.columns:
+                compare_df[_col] = compare_df[_col].astype(str)
 
         # ── Comparison filters ────────────────────────────────────────
         cmp_c1, cmp_c2, cmp_c3 = st.columns(3)
 
-        cmp_proc_opts   = sorted(compare_df["process"].astype(str).dropna().unique().tolist())    if "process"    in compare_df.columns else []
-        cmp_layer_opts  = sorted(compare_df["asap_layer"].astype(str).dropna().unique().tolist()) if "asap_layer" in compare_df.columns else []
+        cmp_proc_opts   = sorted(processed["process"].astype(str).dropna().unique().tolist())    if "process"    in processed.columns else []
+        cmp_layer_opts  = sorted(processed["asap_layer"].astype(str).dropna().unique().tolist()) if "asap_layer" in processed.columns else []
         cmp_stride_opts = ["Spoofing","Tampering","InformationDisclosure",
                            "DenialOfService","Repudiation","ElevationOfPrivilege"]
 
@@ -696,9 +707,9 @@ if uploaded:
                 matched_normal = full_normal_df.iloc[0]
                 if normal_fallback:
                     st.caption(
-                        f"No normal transactions exist for the selected filter "
-                        f"({cmp_proc} / {cmp_layer} / {cmp_stride}) — "
-                        f"this process or layer only appears in attack logs. "
+                        f"No normal transactions found matching the selected combination "
+                        f"({cmp_proc} / {cmp_layer} / {cmp_stride}). "
+                        f"This combination may not exist in the benign baseline. "
                         f"Showing the closest available normal transaction for reference."
                     )
                 else:
