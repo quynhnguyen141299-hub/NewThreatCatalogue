@@ -615,11 +615,49 @@ if uploaded:
 
         st.dataframe(filtered, use_container_width=True)
 
-        # Normal vs threat
+        # Normal vs threat — matched by process + asap_layer + stride_tags
         st.subheader("Normal vs Threat Transaction Comparison")
-        normal_df=processed[raw_votes==0]
-        if len(threats_df)>0 and len(normal_df)>0:
-            st.dataframe(pd.DataFrame({"Normal":normal_df.iloc[0],"Threat":threats_df.iloc[0]}).T,use_container_width=True)
+        normal_df = processed[raw_votes == 0]
+
+        if len(threats_df) > 0 and len(normal_df) > 0:
+            # Try to find a normal transaction matching the first threat's
+            # process, asap_layer, and stride_tags so the comparison is
+            # meaningful (same transaction type, different label).
+            first_threat = threats_df.iloc[0]
+            matched_normal = None
+
+            # Match on process + asap_layer + stride_tags (all three)
+            for col_set in [
+                ["process", "asap_layer", "stride_tags"],
+                ["process", "asap_layer"],
+                ["process"],
+            ]:
+                # Only filter on columns that exist in both dataframes
+                cols = [c for c in col_set if c in normal_df.columns and c in threats_df.columns]
+                if not cols:
+                    continue
+                mask = pd.Series([True] * len(normal_df), index=normal_df.index)
+                for c in cols:
+                    mask &= normal_df[c] == first_threat[c]
+                candidates = normal_df[mask]
+                if len(candidates) > 0:
+                    matched_normal = candidates.iloc[0]
+                    matched_label = " + ".join(cols)
+                    break
+
+            if matched_normal is not None:
+                st.caption(f"Matched on: **{matched_label}** — comparing transactions of the same type.")
+                st.dataframe(
+                    pd.DataFrame({"Normal": matched_normal, "Threat": first_threat}).T,
+                    use_container_width=True
+                )
+            else:
+                # Fallback: no match found — use first available normal row
+                st.caption("No matching normal transaction found for the same process/layer — showing closest available.")
+                st.dataframe(
+                    pd.DataFrame({"Normal": normal_df.iloc[0], "Threat": first_threat}).T,
+                    use_container_width=True
+                )
 
         # Why flagged
         st.subheader("Why Was It Flagged?")
